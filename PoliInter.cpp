@@ -1,5 +1,3 @@
-//PIR usando Interpolación Polinómica
-
 #include <openfhe.h>
 #include <iostream>
 #include <vector>
@@ -34,11 +32,11 @@ std::vector<int64_t> computeLagrangeCoefficients(const std::vector<int64_t>& x, 
 
 int main() {
     size_t databaseSize;
-    std::cout << "Ingrese el tamaño de la base de datos: ";
+    std::cout << "Escribe el tamaño de la base de datos: ";
     std::cin >> databaseSize;
 
     if (databaseSize <= 0) {
-        std::cerr << "Error: ¡El tamaño de la base de datos debe ser positivo!" << std::endl;
+        std::cerr << "Error: El tamaño de la base de datos debe ser positivo" << std::endl;
         return 1;
     }
 
@@ -56,7 +54,7 @@ int main() {
     cryptoContext->Enable(LEVELEDSHE);
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
-    std::cout << "¡Contexto criptográfico configurado exitosamente! Tiempo: " << elapsed.count() << " segundos" << std::endl;
+    std::cout << "Contexto criptográfico configurado exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
     // Generar claves
     start = std::chrono::high_resolution_clock::now();
@@ -64,7 +62,7 @@ int main() {
     cryptoContext->EvalMultKeyGen(keyPair.secretKey);
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "¡Par de claves generado exitosamente! Tiempo: " << elapsed.count() << " segundos" << std::endl;
+    std::cout << "Par de claves generado exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
     // Definir la base de datos (servidor)
     std::vector<int64_t> database(databaseSize);
@@ -85,18 +83,18 @@ int main() {
 
     // Cifrar el índice de la entrada deseada (Cliente)
     size_t desiredIndex;
-    std::cout << "Ingrese el índice a consultar (0 a " << database.size() - 1 << "): ";
+    std::cout << "Escribe el índice a consultar (0 a " << database.size() - 1 << "): ";
     std::cin >> desiredIndex;
 
     if (desiredIndex >= database.size()) {
-        std::cerr << "Error: ¡Índice fuera de rango!" << std::endl;
+        std::cerr << "Error: Índice fuera de rango" << std::endl;
         return 1;
     }
 
     Plaintext ptIndex = cryptoContext->MakePackedPlaintext({static_cast<int64_t>(desiredIndex)});
     auto encryptedIndex = cryptoContext->Encrypt(keyPair.publicKey, ptIndex);
 
-    std::cout << "¡Índice " << desiredIndex << " cifrado exitosamente!" << std::endl;
+    std::cout << "Índice " << desiredIndex << " cifrado exitosamente" << std::endl;
 
     start = std::chrono::high_resolution_clock::now();
 
@@ -114,7 +112,7 @@ int main() {
 
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "¡Interpolación polinomial completada en el servidor! Tiempo: " << elapsed.count() << " segundos" << std::endl;
+    std::cout << "Interpolación polinomial completada en el servidor Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
     // Descifrar el resultado (Cliente)
     start = std::chrono::high_resolution_clock::now();
@@ -122,7 +120,7 @@ int main() {
     cryptoContext->Decrypt(keyPair.secretKey, encryptedResult, &decryptedResult);
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "¡Descifrado completado! Tiempo: " << elapsed.count() << " segundos" << std::endl;
+    std::cout << "Descifrado completado Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
     std::cout << "Resultado descifrado: ";
     decryptedResult->SetLength(1);
