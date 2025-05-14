@@ -1,117 +1,186 @@
-//PIR using 2D MATRIX
+//PIR usando matriz 2D
 
 #include <openfhe.h>
 #include <iostream>
 #include <vector>
-#include <chrono> // For timing
-#include <windows.h> // For memory usage (Windows)
-#include <psapi.h> // For memory usage (Windows)
+#include <chrono>
+#include <windows.h>
+#include <psapi.h>
+#include <cmath>
 
 using namespace lbcrypto;
 
-// Function to get memory usage (Windows)
 size_t getMemoryUsage() {
     PROCESS_MEMORY_COUNTERS pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-        return pmc.WorkingSetSize / 1024; // Memory usage in KB
+        return pmc.WorkingSetSize / 1024;
     }
     return 0; 
 }
 
+std::vector<std::vector<int64_t>> createMatrix(int totalEntries, int& rows, int& cols) {
+    rows = static_cast<int>(std::sqrt(totalEntries));
+    if (rows * rows < totalEntries) rows++;
+    cols = (totalEntries + rows - 1) / rows;
+    
+    std::vector<std::vector<int64_t>> matrix(rows, std::vector<int64_t>(cols, 0));
+    
+    int64_t value = 10;
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            if (i * cols + j < totalEntries) {
+                matrix[i][j] = value;
+                value += 10;
+            }
+        }
+    }
+    
+    return matrix;
+}
+
 int main() {
-    // Define parameters
+    int totalEntries;
+    std::cout << "Escribe el número total de entradas en la base de datos: ";
+    std::cin >> totalEntries;
+    
+    if (totalEntries <= 0) {
+        std::cerr << "Error: El número de entradas debe ser positivo." << std::endl;
+        return 1;
+    }
+
+    // Crear y mostrar matriz del tamaño especificado
+    int rows, cols;
+    auto matrix = createMatrix(totalEntries, rows, cols);
+    
+    std::cout << "\nCreada " << rows << "x" << cols << " matriz con " 
+              << totalEntries << " entradas" << std::endl;
+    
+    if (rows <= 10 && cols <= 10) {
+        std::cout << "\nMatriz:" << std::endl;
+        for (const auto& row : matrix) {
+            for (const auto& entry : row) {
+                std::cout << entry << " ";
+            }
+            std::cout << std::endl;
+        }
+    }
+
+    // Preguntar la entrada
+    int entryIndex;
+    do {
+        std::cout << "\nEscribe el índice de la entrada a recuperar (0-" << totalEntries - 1 << "): ";
+        std::cin >> entryIndex;
+        if (entryIndex < 0 || entryIndex >= totalEntries) {
+            std::cerr << "Error: Índice fuera de rango. Por favor intentalo de nuevo." << std::endl;
+        }
+    } while (entryIndex < 0 || entryIndex >= totalEntries);
+    
+    int desiredRow = entryIndex / cols;
+    int desiredCol = entryIndex % cols;
+    std::cout << "Recuperando entrada en la posición (" << desiredRow << ", " << desiredCol << ")" << std::endl;
+
+    // Parámetros
     CCParams<CryptoContextBGVRNS> parameters;
-    parameters.SetMultiplicativeDepth(3); 
-    parameters.SetPlaintextModulus(4293918721); 
-    parameters.SetRingDim(16384); 
+    parameters.SetMultiplicativeDepth(4);
+    parameters.SetPlaintextModulus(65537);
+    parameters.SetRingDim(32768);
     parameters.SetSecurityLevel(HEStd_128_classic);
-    auto start = std::chrono::high_resolution_clock::now(); // Start timer
+    
+    // Contexto FHE
+    auto start = std::chrono::high_resolution_clock::now();
     CryptoContext<DCRTPoly> cryptoContext = GenCryptoContext(parameters);
     cryptoContext->Enable(PKE);
     cryptoContext->Enable(KEYSWITCH);
     cryptoContext->Enable(LEVELEDSHE);
-    auto end = std::chrono::high_resolution_clock::now(); // End timer
+    auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Crypto context set up successfully! Time: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "\nContexto criptográfico configurado exitosamente. Tiempo: " << elapsed.count() << " seconds" << std::endl;
 
-    // Generate keys
+    // Generar llaves
     start = std::chrono::high_resolution_clock::now();
     KeyPair<DCRTPoly> keyPair = cryptoContext->KeyGen();
     cryptoContext->EvalMultKeyGen(keyPair.secretKey);
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "Key pair generated successfully! Time: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Par de claves generado exitosamente. Tiempo: " << elapsed.count() << " seconds" << std::endl;
 
-    // Define matrix (server-side)
-    std::vector<std::vector<int64_t>> matrix = {
-        {10, 20, 30, 40, 50},
-        {60, 70, 80, 90, 100},
-        {110, 120, 130, 140, 150},
-        {160, 170, 180, 190, 200},
-        {210, 220, 230, 240, 250}
-    };
-    std::cout << "Matrix:" << std::endl;
-    for (const auto& row : matrix) {
-        for (const auto& entry : row) {
-            std::cout << entry << " ";
-        }
-        std::cout << std::endl;
-    }
-
-    // Client encrypts the row and column indices
-    int64_t desiredRow = 2; // Row index (0-based)
-    int64_t desiredCol = 3; // Column index (0-based)
+    // Encriptación del vector selector
     start = std::chrono::high_resolution_clock::now();
-    Plaintext ptRow = cryptoContext->MakePackedPlaintext({desiredRow});
-    Plaintext ptCol = cryptoContext->MakePackedPlaintext({desiredCol});
+    
+    // Vector fila
+    std::vector<int64_t> rowSelection(rows, 0);
+    rowSelection[desiredRow] = 1;
+    Plaintext ptRow = cryptoContext->MakePackedPlaintext(rowSelection);
+    
+    // Vector columna
+    std::vector<int64_t> colSelection(cols, 0);
+    colSelection[desiredCol] = 1;
+    Plaintext ptCol = cryptoContext->MakePackedPlaintext(colSelection);
+    
     auto encryptedRow = cryptoContext->Encrypt(keyPair.publicKey, ptRow);
     auto encryptedCol = cryptoContext->Encrypt(keyPair.publicKey, ptCol);
+    
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "Row and column indices encrypted successfully! Time: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Vectores de selección encriptados exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
-    // Server performs PIR computation
+    // Computación PIR (Servidor)
     start = std::chrono::high_resolution_clock::now();
     auto encryptedResult = cryptoContext->Encrypt(keyPair.publicKey, cryptoContext->MakePackedPlaintext({0}));
 
     for (size_t i = 0; i < matrix.size(); i++) {
-        std::vector<int64_t> rowSelector(matrix.size(), 0);
-        rowSelector[i] = 1;
-        Plaintext ptRowSelector = cryptoContext->MakePackedPlaintext(rowSelector);
-        auto encryptedRowSelector = cryptoContext->Encrypt(keyPair.publicKey, ptRowSelector);
-        auto encryptedRowProduct = cryptoContext->EvalMult(encryptedRow, encryptedRowSelector);
+        std::vector<int64_t> currentRowSelector(rows, 0);
+        currentRowSelector[i] = 1;
+        Plaintext ptCurrentRow = cryptoContext->MakePackedPlaintext(currentRowSelector);
+        auto encryptedCurrentRow = cryptoContext->Encrypt(keyPair.publicKey, ptCurrentRow);
+        
+        auto encryptedRowMatch = cryptoContext->EvalMult(encryptedRow, encryptedCurrentRow);
 
         for (size_t j = 0; j < matrix[i].size(); j++) {
-            std::vector<int64_t> colSelector(matrix[i].size(), 0);
-            colSelector[j] = 1;
-            Plaintext ptColSelector = cryptoContext->MakePackedPlaintext(colSelector);
-            auto encryptedColSelector = cryptoContext->Encrypt(keyPair.publicKey, ptColSelector);
-            auto encryptedColProduct = cryptoContext->EvalMult(encryptedCol, encryptedColSelector);
-            auto encryptedProduct = cryptoContext->EvalMult(encryptedRowProduct, encryptedColProduct);
-            auto encryptedScaled = cryptoContext->EvalMult(encryptedProduct, cryptoContext->MakePackedPlaintext({matrix[i][j]}));
-            encryptedResult = cryptoContext->EvalAdd(encryptedResult, encryptedScaled);
+            std::vector<int64_t> currentColSelector(cols, 0);
+            currentColSelector[j] = 1;
+            Plaintext ptCurrentCol = cryptoContext->MakePackedPlaintext(currentColSelector);
+            auto encryptedCurrentCol = cryptoContext->Encrypt(keyPair.publicKey, ptCurrentCol);
+            
+            auto encryptedColMatch = cryptoContext->EvalMult(encryptedCol, encryptedCurrentCol);
+            
+            auto encryptedPositionMatch = cryptoContext->EvalMult(encryptedRowMatch, encryptedColMatch);
+            
+            auto encryptedValue = cryptoContext->EvalMult(
+                encryptedPositionMatch,
+                cryptoContext->MakePackedPlaintext({matrix[i][j]}));
+            
+            encryptedResult = cryptoContext->EvalAdd(encryptedResult, encryptedValue);
         }
     }
+    
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "PIR computation completed on the server! Time: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Cálculo PIR completado. Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
-    // Client decrypts result
+    // Desencriptación de resultado (Cliente)
     start = std::chrono::high_resolution_clock::now();
     Plaintext decryptedResult;
     cryptoContext->Decrypt(keyPair.secretKey, encryptedResult, &decryptedResult);
+    decryptedResult->SetLength(1);
     end = std::chrono::high_resolution_clock::now();
     elapsed = end - start;
-    std::cout << "Decryption completed! Time: " << elapsed.count() << " seconds" << std::endl;
+    std::cout << "Decryption completed! Time: " << elapsed.count() << " segundos" << std::endl;
 
-    // Output result
-    std::cout << "Decrypted result: ";
-    decryptedResult->SetLength(1); // Ensure the length matches the expected result
-    std::cout << decryptedResult->GetPackedValue()[0] << std::endl;
+    // Resultados
+    std::cout << "\nResultado consulta:" << std::endl;
+    std::cout << "Entrada obtenida #" << entryIndex << ": " << decryptedResult->GetPackedValue()[0] << std::endl;
+    std::cout << "Valor real en la base de datos: " << matrix[desiredRow][desiredCol] << std::endl;
+
+    if (decryptedResult->GetPackedValue()[0] == matrix[desiredRow][desiredCol]) {
+        std::cout << "El resultado coincide con el valor real" << std::endl;
+    } else {
+        std::cout << "ERROR: El resultado no coincide con el valor" << std::endl;
+    }
 
     // Measure memory usage
     size_t memoryUsage = getMemoryUsage();
-    std::cout << "Memory usage: " << memoryUsage << " KB" << std::endl;
+    std::cout << "\nUso de memoria: " << memoryUsage << " KB" << std::endl;
 
     return 0;
 }
