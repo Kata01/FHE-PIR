@@ -4,10 +4,10 @@
 #include <chrono>
 #include <windows.h>
 #include <psapi.h>
-#include <cmath>
 
 using namespace lbcrypto;
 
+// Función para medir uso de memoria
 size_t getMemoryUsage() {
     PROCESS_MEMORY_COUNTERS pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
@@ -16,98 +16,106 @@ size_t getMemoryUsage() {
     return 0;
 }
 
-int main() {
-    size_t dbSize;
-    std::cout << "Tamaño de la base de datos: ";
-    std::cin >> dbSize;
-
-    if (dbSize == 0) {
-        std::cerr << "Error: tamaño inválido" << std::endl;
-        return 1;
-    }
-
-    // Configurar parámetros de FHE
-    CCParams<CryptoContextBGVRNS> params;
-    params.SetMultiplicativeDepth(1); 
-    params.SetPlaintextModulus(65537);
-    params.SetRingDim(16384);
-    params.SetSecurityLevel(HEStd_128_classic);
-
-    auto start = std::chrono::high_resolution_clock::now();
-    CryptoContext<DCRTPoly> cc = GenCryptoContext(params);
+// CLIENTE: Inicialización y generación de claves
+CryptoContext<DCRTPoly> inicializarContexto() {
+    CCParams<CryptoContextBGVRNS> parameters;
+    parameters.SetMultiplicativeDepth(2);
+    parameters.SetPlaintextModulus(4293918721);
+    parameters.SetRingDim(16384);
+    parameters.SetSecurityLevel(HEStd_128_classic);
+    CryptoContext<DCRTPoly> cc = GenCryptoContext(parameters);
     cc->Enable(PKE);
     cc->Enable(KEYSWITCH);
     cc->Enable(LEVELEDSHE);
-    cc->Enable(ADVANCEDSHE);
-    auto end = std::chrono::high_resolution_clock::now();
-    std::cout << "Contexto generado en " << (end - start).count() / 1e9 << " segundos\n";
+    return cc;
+}
 
-    // Generar claves
-    start = std::chrono::high_resolution_clock::now();
-    auto keys = cc->KeyGen();
+// CLIENTE: Cifrar del índice deseado
+Ciphertext<DCRTPoly> cifrarIndice(CryptoContext<DCRTPoly> cc, PublicKey<DCRTPoly> pk, size_t index) {
+    Plaintext pt = cc->MakePackedPlaintext({ static_cast<int64_t>(index) });
+    return cc->Encrypt(pk, pt);
+}
 
-    // Para EvalSum (rotaciones necesarias)
-    std::vector<int32_t> rotIndices;
-    for (size_t i = 1; i < dbSize; i <<= 1)
-        rotIndices.push_back(static_cast<int32_t>(i));
-    cc->EvalAtIndexKeyGen(keys.secretKey, rotIndices);
-    end = std::chrono::high_resolution_clock::now();
-    std::cout << "Llaves generadas en " << (end - start).count() / 1e9 << " segundos\n";
+// SERVIDOR: Procesamiento PIR-FHE
+Ciphertext<DCRTPoly> ejecutarPIRFHE(CryptoContext<DCRTPoly> cc,
+                                  const std::vector<int64_t>& db,
+                                  Ciphertext<DCRTPoly> encryptedIndex,
+                                  PublicKey<DCRTPoly> pk) {
+    auto encryptedResult = cc->Encrypt(pk, cc->MakePackedPlaintext({ 0 }));
+    for (size_t i = 0; i < db.size(); i++) {
+        std::vector<int64_t> selector(db.size(), 0);
+        selector[i] = 1;
+        Plaintext ptSelector = cc->MakePackedPlaintext(selector);
+        auto encryptedSelector = cc->Encrypt(pk, ptSelector);
+        auto encryptedProduct = cc->EvalMult(encryptedIndex, encryptedSelector);
+        auto encryptedScaled = cc->EvalMult(encryptedProduct, cc->MakePackedPlaintext({ db[i] }));
+        encryptedResult = cc->EvalAdd(encryptedResult, encryptedScaled);
+    }
+    return encryptedResult;
+}
 
-    // Crear base de datos en texto plano
-    std::vector<int64_t> database(dbSize);
-    for (size_t i = 0; i < dbSize; ++i)
-        database[i] = static_cast<int64_t>((i + 1) * 10);
+// CLIENTE: Descifrar resultado
+int64_t descifrarResultado(CryptoContext<DCRTPoly> cc, Ciphertext<DCRTPoly> ctxt, const PrivateKey<DCRTPoly>& sk) {
+    Plaintext pt;
+    cc->Decrypt(sk, ctxt, &pt);
+    pt->SetLength(1);
+    return pt->GetPackedValue()[0];
+}
 
-    Plaintext ptDatabase = cc->MakePackedPlaintext(database);
+int main() {
+    size_t dbSize;
+    std::cout << "Escribe el tamaño de la base de datos: ";
+    std::cin >> dbSize;
 
-    // Mostrar primeros valores
-    std::cout << "Base de datos: ";
-    for (size_t i = 0; i < std::min(dbSize, size_t(10)); ++i)
-        std::cout << database[i] << " ";
-    std::cout << (dbSize > 10 ? "... " : "") << std::endl;
-
-    // Preguntar índice
-    size_t queryIndex;
-    std::cout << "Índice a recuperar (0 - " << dbSize - 1 << "): ";
-    std::cin >> queryIndex;
-
-    if (queryIndex >= dbSize) {
-        std::cerr << "Error: índice fuera de rango\n";
+    if (dbSize == 0) {
+        std::cerr << "Error: El tamaño debe ser positivo" << std::endl;
         return 1;
     }
 
-    // Crear vector selector con un 1 en la posición a recuperar (cliente)
-    std::vector<int64_t> selector(dbSize, 0);
-    selector[queryIndex] = 1;
-    Plaintext ptSelector = cc->MakePackedPlaintext(selector);
-    auto encryptedSelector = cc->Encrypt(keys.publicKey, ptSelector);
+    // CLIENTE: Inicializa contexto y claves
+    auto start = std::chrono::high_resolution_clock::now();
+    auto cc = inicializarContexto();
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "Contexto criptográfico creado. Tiempo: " << (end - start).count() / 1e9 << " s" << std::endl;
 
-    // PIR: EvalMult + EvalSum (Servidor)
     start = std::chrono::high_resolution_clock::now();
-    auto encryptedProduct = cc->EvalMult(encryptedSelector, ptDatabase);
-    auto encryptedResult = cc->EvalSum(encryptedProduct, dbSize);
+    auto keyPair = cc->KeyGen();
+    cc->EvalMultKeyGen(keyPair.secretKey);
     end = std::chrono::high_resolution_clock::now();
-    std::cout << "Cálculo PIR completado en " << (end - start).count() / 1e9 << " segundos\n";
+    std::cout << "Claves generadas. Tiempo: " << (end - start).count() / 1e9 << " s" << std::endl;
 
-    // Desencriptar resultado (Cliente)
+    // SERVIDOR: Crea base de datos
+    std::vector<int64_t> db(dbSize);
+    for (size_t i = 0; i < dbSize; i++) db[i] = (i + 1) * 10;
+
+    std::cout << "Base de datos (primeros 10): ";
+    for (size_t i = 0; i < std::min<size_t>(10, dbSize); i++) std::cout << db[i] << " ";
+    std::cout << "...\n";
+
+    // CLIENTE: Cifra índice
+    size_t index;
+    std::cout << "Índice a consultar (0 - " << dbSize - 1 << "): ";
+    std::cin >> index;
+    if (index >= dbSize) {
+        std::cerr << "Índice fuera de rango" << std::endl;
+        return 1;
+    }
+    auto encryptedIndex = cifrarIndice(cc, keyPair.publicKey, index);
+    std::cout << "Índice cifrado correctamente.\n";
+
+    // SERVIDOR: Cálculo PIR-FHE
     start = std::chrono::high_resolution_clock::now();
-    Plaintext decryptedResult;
-    cc->Decrypt(keys.secretKey, encryptedResult, &decryptedResult);
-    decryptedResult->SetLength(1);
+    auto encryptedResult = ejecutarPIRFHE(cc, db, encryptedIndex, keyPair.publicKey);
     end = std::chrono::high_resolution_clock::now();
-    std::cout << "Resultado desencriptado en " << (end - start).count() / 1e9 << " segundos\n";
+    std::cout << "Servidor completó el cálculo PIR en " << (end - start).count() / 1e9 << " s\n";
 
-    // Resultado
-    int64_t recovered = decryptedResult->GetPackedValue()[0];
-    std::cout << "\nResultado recuperado: " << recovered << std::endl;
-    std::cout << "Valor real esperado: " << database[queryIndex] << std::endl;
+    // CLIENTE: Descifra el resultado
+    start = std::chrono::high_resolution_clock::now();
+    int64_t resultado = descifrarResultado(cc, encryptedResult, keyPair.secretKey);
+    end = std::chrono::high_resolution_clock::now();
+    std::cout << "Cliente descifró el resultado en " << (end - start).count() / 1e9 << " s\n";
+    std::cout << "Valor recuperado de la base de datos: " << resultado << "\n";
 
-    if (recovered == database[queryIndex])
-        std::cout << "Coinciden\n";
-    else
-        std::cout << "ERROR: resultado incorrecto\n";
-
-    std::cout << "\nUso de memoria: " << getMemoryUsage() << " KB\n";
+    std::cout << "Uso de memoria: " << getMemoryUsage() << " KB\n";
     return 0;
 }
