@@ -7,112 +7,115 @@
 
 using namespace lbcrypto;
 
-// Función para obtener el uso de memoria
+// Función para medir uso de memoria
 size_t getMemoryUsage() {
     PROCESS_MEMORY_COUNTERS pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
-        return pmc.WorkingSetSize / 1024; // Uso de memoria en KB
+        return pmc.WorkingSetSize / 1024;
     }
     return 0;
 }
 
-int main() {
-    size_t databaseSize;
-    std::cout << "Escribe el tamaño de la base de datos: ";
-    std::cin >> databaseSize;
-
-    if (databaseSize <= 0) {
-        std::cerr << "Error: El tamaño de la base de datos debe ser positivo" << std::endl;
-        return 1;
-    }
-
-    // Definir parámetros
+// CLIENTE: Inicialización y generación de claves
+CryptoContext<DCRTPoly> inicializarContexto() {
     CCParams<CryptoContextBGVRNS> parameters;
     parameters.SetMultiplicativeDepth(2);
     parameters.SetPlaintextModulus(4293918721);
     parameters.SetRingDim(16384);
     parameters.SetSecurityLevel(HEStd_128_classic);
+    CryptoContext<DCRTPoly> cc = GenCryptoContext(parameters);
+    cc->Enable(PKE);
+    cc->Enable(KEYSWITCH);
+    cc->Enable(LEVELEDSHE);
+    return cc;
+}
 
-    // Definir contexto
-    auto start = std::chrono::high_resolution_clock::now();
-    CryptoContext<DCRTPoly> cryptoContext = GenCryptoContext(parameters);
-    cryptoContext->Enable(PKE);
-    cryptoContext->Enable(KEYSWITCH);
-    cryptoContext->Enable(LEVELEDSHE);
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Contexto criptográfico configurado exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
+// CLIENTE: Cifrar del índice deseado
+Ciphertext<DCRTPoly> cifrarIndice(CryptoContext<DCRTPoly> cc, PublicKey<DCRTPoly> pk, size_t index) {
+    Plaintext pt = cc->MakePackedPlaintext({ static_cast<int64_t>(index) });
+    return cc->Encrypt(pk, pt);
+}
 
-    // Generar claves (Cliente)
-    start = std::chrono::high_resolution_clock::now();
-    KeyPair<DCRTPoly> keyPair = cryptoContext->KeyGen();
-    cryptoContext->EvalMultKeyGen(keyPair.secretKey);
-    end = std::chrono::high_resolution_clock::now();
-    elapsed = end - start;
-    std::cout << "Par de claves generado exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
-
-    // Definir base de datos (Servidor)
-    std::vector<int64_t> database(databaseSize);
-    for (size_t i = 0; i < database.size(); i++) {
-        database[i] = static_cast<int64_t>(i + 1) * 10; // Valores: 10, 20, 30, ...
+// SERVIDOR: Procesamiento PIR-FHE
+Ciphertext<DCRTPoly> ejecutarPIRFHE(CryptoContext<DCRTPoly> cc,
+                                  const std::vector<int64_t>& db,
+                                  Ciphertext<DCRTPoly> encryptedIndex,
+                                  PublicKey<DCRTPoly> pk) {
+    auto encryptedResult = cc->Encrypt(pk, cc->MakePackedPlaintext({ 0 }));
+    for (size_t i = 0; i < db.size(); i++) {
+        std::vector<int64_t> selector(db.size(), 0);
+        selector[i] = 1;
+        Plaintext ptSelector = cc->MakePackedPlaintext(selector);
+        auto encryptedSelector = cc->Encrypt(pk, ptSelector);
+        auto encryptedProduct = cc->EvalMult(encryptedIndex, encryptedSelector);
+        auto encryptedScaled = cc->EvalMult(encryptedProduct, cc->MakePackedPlaintext({ db[i] }));
+        encryptedResult = cc->EvalAdd(encryptedResult, encryptedScaled);
     }
+    return encryptedResult;
+}
 
-    std::cout << "Base de datos (primeras 10 entradas): ";
-    for (size_t i = 0; i < std::min<size_t>(10, database.size()); i++) {
-        std::cout << database[i] << " ";
-    }
-    std::cout << "... (total " << database.size() << " entradas)" << std::endl;
+// CLIENTE: Descifrar resultado
+int64_t descifrarResultado(CryptoContext<DCRTPoly> cc, Ciphertext<DCRTPoly> ctxt, const PrivateKey<DCRTPoly>& sk) {
+    Plaintext pt;
+    cc->Decrypt(sk, ctxt, &pt);
+    pt->SetLength(1);
+    return pt->GetPackedValue()[0];
+}
 
-    // Cifra el índice de la entrada deseada (Cliente)
-    size_t desiredIndex;
-    std::cout << "Ingrese el índice a consultar (0 a " << database.size() - 1 << "): ";
-    std::cin >> desiredIndex;
+int main() {
+    size_t dbSize;
+    std::cout << "Escribe el tamaño de la base de datos: ";
+    std::cin >> dbSize;
 
-    if (desiredIndex >= database.size()) {
-        std::cerr << "Error: Índice fuera de rango" << std::endl;
+    if (dbSize == 0) {
+        std::cerr << "Error: El tamaño debe ser positivo" << std::endl;
         return 1;
     }
 
-    Plaintext ptIndex = cryptoContext->MakePackedPlaintext({static_cast<int64_t>(desiredIndex)});
-    auto encryptedIndex = cryptoContext->Encrypt(keyPair.publicKey, ptIndex);
-
-    std::cout << "Índice " << desiredIndex << " cifrado exitosamente" << std::endl;
-
+    // CLIENTE: Inicializa contexto y claves
+    auto start = std::chrono::high_resolution_clock::now();
+    auto cc = inicializarContexto();
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "Contexto criptográfico creado. Tiempo: " << (end - start).count() / 1e9 << " s" << std::endl;
 
     start = std::chrono::high_resolution_clock::now();
+    auto keyPair = cc->KeyGen();
+    cc->EvalMultKeyGen(keyPair.secretKey);
+    end = std::chrono::high_resolution_clock::now();
+    std::cout << "Claves generadas. Tiempo: " << (end - start).count() / 1e9 << " s" << std::endl;
 
-    // Inicialización del resultado como un cero cifrado(Servidor)
-    auto encryptedResult = cryptoContext->Encrypt(keyPair.publicKey, cryptoContext->MakePackedPlaintext({0}));
+    // SERVIDOR: Crea base de datos
+    std::vector<int64_t> db(dbSize);
+    for (size_t i = 0; i < dbSize; i++) db[i] = (i + 1) * 10;
 
-    // Calcular producto entre el índice cifrado y la base de datos (Servidor)
-    for (size_t i = 0; i < database.size(); i++) {
-        std::vector<int64_t> selector(database.size(), 0);
-        selector[i] = 1;
-        Plaintext ptSelector = cryptoContext->MakePackedPlaintext(selector);
-        auto encryptedSelector = cryptoContext->Encrypt(keyPair.publicKey, ptSelector);
-        auto encryptedProduct = cryptoContext->EvalMult(encryptedIndex, encryptedSelector);
-        auto encryptedScaled = cryptoContext->EvalMult(encryptedProduct, cryptoContext->MakePackedPlaintext({database[i]}));
-        encryptedResult = cryptoContext->EvalAdd(encryptedResult, encryptedScaled);
+    std::cout << "Base de datos (primeros 10): ";
+    for (size_t i = 0; i < std::min<size_t>(10, dbSize); i++) std::cout << db[i] << " ";
+    std::cout << "...\n";
+
+    // CLIENTE: Cifra índice
+    size_t index;
+    std::cout << "Índice a consultar (0 - " << dbSize - 1 << "): ";
+    std::cin >> index;
+    if (index >= dbSize) {
+        std::cerr << "Índice fuera de rango" << std::endl;
+        return 1;
     }
+    auto encryptedIndex = cifrarIndice(cc, keyPair.publicKey, index);
+    std::cout << "Índice cifrado correctamente.\n";
 
-    end = std::chrono::high_resolution_clock::now();
-    elapsed = end - start;
-    std::cout << "Cálculo PIR completado en el servidor. Tiempo: " << elapsed.count() << " segundos" << std::endl;
-
-    // Descifra el resultado (Cliente)
+    // SERVIDOR: Cálculo PIR-FHE
     start = std::chrono::high_resolution_clock::now();
-    Plaintext decryptedResult;
-    cryptoContext->Decrypt(keyPair.secretKey, encryptedResult, &decryptedResult);
+    auto encryptedResult = ejecutarPIRFHE(cc, db, encryptedIndex, keyPair.publicKey);
     end = std::chrono::high_resolution_clock::now();
-    elapsed = end - start;
-    std::cout << "Descifrado completado. Tiempo: " << elapsed.count() << " segundos" << std::endl;
+    std::cout << "Servidor completó el cálculo PIR en " << (end - start).count() / 1e9 << " s\n";
 
-    std::cout << "Resultado descifrado: ";
-    decryptedResult->SetLength(1);
-    std::cout << decryptedResult->GetPackedValue()[0] << std::endl;
+    // CLIENTE: Descifra el resultado
+    start = std::chrono::high_resolution_clock::now();
+    int64_t resultado = descifrarResultado(cc, encryptedResult, keyPair.secretKey);
+    end = std::chrono::high_resolution_clock::now();
+    std::cout << "Cliente descifró el resultado en " << (end - start).count() / 1e9 << " s\n";
+    std::cout << "Valor recuperado de la base de datos: " << resultado << "\n";
 
-    size_t memoryUsage = getMemoryUsage();
-    std::cout << "Uso de memoria: " << memoryUsage << " KB" << std::endl;
-
+    std::cout << "Uso de memoria: " << getMemoryUsage() << " KB\n";
     return 0;
 }
