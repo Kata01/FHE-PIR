@@ -1,5 +1,3 @@
-// PIR usando vector
-
 #include <openfhe.h>
 #include <iostream>
 #include <vector>
@@ -45,7 +43,7 @@ int main() {
     std::chrono::duration<double> elapsed = end - start;
     std::cout << "Contexto criptográfico configurado exitosamente. Tiempo: " << elapsed.count() << " segundos" << std::endl;
 
-    // Generar claves
+    // Generar claves (Cliente)
     start = std::chrono::high_resolution_clock::now();
     KeyPair<DCRTPoly> keyPair = cryptoContext->KeyGen();
     cryptoContext->EvalMultKeyGen(keyPair.secretKey);
